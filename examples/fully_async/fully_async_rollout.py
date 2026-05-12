@@ -5,7 +5,7 @@ import threading
 import time
 
 # Import core functions from sglang_rollout directly to avoid code duplication
-from slime.rollout.sglang_rollout import GenerateState, generate_and_rm_group
+from slime.rollout.sglang_rollout import GenerateState, eval_rollout, generate_and_rm_group
 from slime.utils.async_utils import run
 from slime.utils.types import Sample
 
@@ -252,7 +252,10 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer) -> list[lis
 
 def generate_rollout_fully_async(args, rollout_id, data_buffer, evaluation=False):
     if evaluation:
-        raise ValueError("Evaluation mode not supported in simple async rollout")
+       # Eval uses slime's stock path (driven by --eval-config / eval_datasets),
+       # not the continuous async training worker.
+       output, _ = run(eval_rollout(args, rollout_id))
+       return output
 
     completed_samples = run(generate_rollout_async(args, rollout_id, data_buffer))
     return completed_samples
