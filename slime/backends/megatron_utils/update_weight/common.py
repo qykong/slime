@@ -38,8 +38,12 @@ def all_gather_param(name: str, param: torch.nn.Parameter) -> torch.Tensor:
         param.partition_stride == 2 and "linear_fc1" in name
     ), "partition_stride != 1 is not supported"
     # TODO: here we did an extra copy during concat, maybe merge this with convert_to_hf is better?
-    # TODO: check only GLU is used.
-    if "linear_fc1.weight" in name or "linear_fc1.bias" in name:
+    # GLU rechunk: for GLU MLPs (e.g. SwiGLU language-model linear_fc1), megatron stores
+    # each rank's local tensor as [gate_part; up_part]. We must reshuffle so the final
+    # concat yields [all_gate; all_up] instead of [g0;u0;g1;u1;...]. Vision-tower MLPs
+    # are NON-GLU (gelu activation, single linear_fc1), so this rechunk would corrupt
+    # them — exclude vision_model.*.linear_fc1 explicitly.
+    if ("linear_fc1.weight" in name or "linear_fc1.bias" in name) and "vision_model" not in name:
         param_partitions = [p.chunk(2, dim=0) for p in param_partitions]
         param_partitions = [p[0] for p in param_partitions] + [p[1] for p in param_partitions]
     # this is bug in megatron's grouped moe.
@@ -100,8 +104,9 @@ def all_gather_params_async(
             # Process the gathered partitions (same logic as original all_gather_param)
             assert partition_dim is not None, "partition_stride != 1 is not supported"
             # TODO: here we did an extra copy during concat, maybe merge this with convert_to_hf is better?
-            # TODO: check only GLU is used.
-            if "linear_fc1.weight" in info.name or "linear_fc1.bias" in info.name:
+            # See all_gather_param above: skip GLU rechunk for vision_model.linear_fc1
+            # (non-GLU MLP) to avoid scrambling the vision tower.
+            if ("linear_fc1.weight" in info.name or "linear_fc1.bias" in info.name) and "vision_model" not in info.name:
                 param_partitions = [p.chunk(2, dim=0) for p in param_partitions]
                 param_partitions = [p[0] for p in param_partitions] + [p[1] for p in param_partitions]
             # this is bug in megatron's grouped moe.
