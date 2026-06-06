@@ -187,7 +187,13 @@ def _named_params_and_buffers_global(
             if not name.startswith("module.module."):
                 name = "module." + name
 
-            decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
+            # VL bridge models name decoder layers under a `language_model.`
+            # infix. Match it optionally (and preserve it on output) so the PP
+            # layer offset is still applied — otherwise PP rank>0 layers keep
+            # local indices and collide with rank 0's layer names.
+            decoder_layers_pattern = (
+                r"module\.module\.(language_model\.)?decoder\.layers\.(\d+)\.(.+)"
+            )
             match = re.match(decoder_layers_pattern, name)
             if not match:
                 # MTP (Multi-Token Prediction) layers for speculative decoding
@@ -210,7 +216,8 @@ def _named_params_and_buffers_global(
                 yield f"module.module.mtp.layers.{layer_idx}.transformer_layer.mlp.experts.{rest}.{param_type}{expert_idx}", param
                 continue
 
-            layer_idx, rest = match.groups()
+            lm_infix, layer_idx, rest = match.groups()
+            lm_infix = lm_infix or ""
             layer_idx = int(layer_idx) + layer_offset
 
             # this is hardcoded for te grouped matmul
@@ -219,9 +226,9 @@ def _named_params_and_buffers_global(
             if match:
                 rest, param_type, expert_idx = match.groups()
                 expert_idx = int(expert_idx) + expert_offset
-                yield f"module.module.decoder.layers.{layer_idx}.mlp.experts.{rest}.{param_type}{expert_idx}", param
+                yield f"module.module.{lm_infix}decoder.layers.{layer_idx}.mlp.experts.{rest}.{param_type}{expert_idx}", param
             else:
-                yield f"module.module.decoder.layers.{layer_idx}.{rest}", param
+                yield f"module.module.{lm_infix}decoder.layers.{layer_idx}.{rest}", param
 
         # treat expert bias as normal parameters
         for name, buffer in model_module.named_buffers():
@@ -231,6 +238,11 @@ def _named_params_and_buffers_global(
             # for model without ddp wrap
             if not name.startswith("module.module."):
                 name = "module." + name
+
+            # Mirror the param loop above: strip the VL bridge's `language_model.`
+            # infix so expert_bias buffers land on the decoder.layers branch.
+            if name.startswith("module.module.language_model."):
+                name = "module.module." + name[len("module.module.language_model.") :]
 
             decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
             match = re.match(decoder_layers_pattern, name)
